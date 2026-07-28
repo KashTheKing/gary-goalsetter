@@ -147,6 +147,14 @@ class GoalView(discord.ui.View):
             await notif_channel.send(text, embed=goal_embed(g))
         await interaction.response.send_message(text)
 
+    @discord.ui.button(label="Copy 📋", style=discord.ButtonStyle.secondary, custom_id="goal_copy")
+    async def copy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = self._goal(interaction)
+        if not g:
+            await interaction.response.send_message("Goal not found.", ephemeral=True)
+            return
+        await interaction.response.send_modal(GoalModal(copy_from=g))
+
     @discord.ui.button(label="Validate ✅", style=discord.ButtonStyle.green, custom_id="goal_validate")
     async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
         g = self._goal(interaction)
@@ -244,6 +252,14 @@ class ValidatorPicker(discord.ui.View):
 
 class GoalModal(discord.ui.Modal, title="New Goal"):
     description = discord.ui.TextInput(label="What's your goal?", max_length=200)
+
+    def __init__(self, copy_from=None):
+        super().__init__()
+        if copy_from:
+            self.description.default = copy_from['description']
+            self.required.default = str(copy_from['required'])
+            self.cooldown.default = format_duration(copy_from['cooldown'])
+
     deadline = discord.ui.TextInput(
         label="Deadline (optional)",
         placeholder="daily | YYYY-MM-DD | YYYY-MM-DD HH:MM (UTC)",
@@ -302,6 +318,13 @@ def parse_duration(s: str) -> int:
     if not match or (match[2] and match[2] not in DURATION_UNITS):
         raise ValueError(s)
     return int(match[1]) * DURATION_UNITS.get(match[2], 1)
+
+
+def format_duration(seconds: int) -> str:
+    for unit, size in (('w', 604800), ('day', 86400), ('hr', 3600), ('m', 60)):
+        if seconds % size == 0 and seconds >= size:
+            return f"{seconds // size}{unit}"
+    return str(seconds)
 
 
 def parse_deadline(s: str):
@@ -391,8 +414,9 @@ async def new_goal(interaction: discord.Interaction):
     await interaction.response.send_modal(GoalModal())
 
 
-@client.tree.command(name='goals', description="List a member's active goals")
-async def list_goals(interaction: discord.Interaction, member: discord.Member):
+@client.tree.command(name='goals', description="List a member's active goals (default: you)")
+async def list_goals(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
     rows = db.execute(
         "SELECT * FROM goals WHERE guild_id=? AND user_id=? AND completed=0 ORDER BY id",
         (interaction.guild_id, member.id),
@@ -400,12 +424,23 @@ async def list_goals(interaction: discord.Interaction, member: discord.Member):
     if not rows:
         await interaction.response.send_message(f"{member.mention} has no active goals.", ephemeral=True)
         return
-    embed = discord.Embed(title=f"🎯 Active goals — {member.display_name}", color=discord.Color.red())
+    now = int(time.time())
+    embed = discord.Embed(title=f"🎯 Goals — {member.display_name}", color=discord.Color.red())
     for g in rows:
-        deadline = f" — due <t:{g['deadline']}:R>" if g['deadline'] else ""
+        expired = g['deadline'] and g['deadline'] < now
+        deadline = f" — {'⌛ expired' if expired else 'due'} <t:{g['deadline']}:R>" if g['deadline'] else ""
         embed.add_field(name=f"Goal #{g['id']}", value=f"{g['description']}{deadline}", inline=False)
-    embed.set_footer(text="Use /goal to view one in detail")
+    embed.set_footer(text="Use /goal to view one, /copygoal to reuse one")
     await interaction.response.send_message(embed=embed)
+
+
+@client.tree.command(name='copygoal', description='Create a new goal from an old one')
+async def copy_goal(interaction: discord.Interaction, goal_id: int):
+    g = get_goal(goal_id)
+    if not g or g['guild_id'] != interaction.guild_id:
+        await interaction.response.send_message("No such goal.", ephemeral=True)
+        return
+    await interaction.response.send_modal(GoalModal(copy_from=g))
 
 
 @client.tree.command(name='goal', description="Show a specific goal's embed")
