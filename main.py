@@ -745,6 +745,16 @@ async def leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
+@client.tree.command(name='resetleaderboard', description='Reset all points in this server (admin)')
+@app_commands.default_permissions(manage_guild=True)
+async def reset_leaderboard(interaction: discord.Interaction):
+    db.execute("DELETE FROM points WHERE guild_id=?", (interaction.guild_id,))
+    db.commit()
+    await interaction.response.send_message(
+        "🏆 Leaderboard reset — everyone starts from 0. New season, fellas!"
+    )
+
+
 @client.tree.command(name='ping', description="Check Gary's latency")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"🏓 Pong! {round(client.latency * 1000)}ms")

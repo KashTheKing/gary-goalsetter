@@ -58,6 +58,7 @@ Everything is stored per-server in a local SQLite database (`gary.db`); buttons 
 | `/setnotifchannel #channel` | Set just the notifications channel (posts the notifications panel) |
 | `/deletegoal goal-id` | Delete any goal in the server |
 | `/deletegoals @member` | Delete **all** of a member's goals |
+| `/resetleaderboard` | Reset every member's points to 0 and restart tracking |
 
 ### Misc
 
