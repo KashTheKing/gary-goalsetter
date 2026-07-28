@@ -374,7 +374,7 @@ class SetupView(discord.ui.View):
             title="👤 User Setup",
             color=discord.Color.blurple(),
             description=(
-                "1. `/newgoal` — set your goal, an optional deadline, how many validations "
+                "1. `/setgoal` — set your goal, an optional deadline, how many validations "
                 "you need, and the remind cooldown\n"
                 "2. Pick up to 5 people to validate your goal (e.g. need 3 of 5)\n"
                 "3. `/notifications` — opt in so people can broadcast your goal with **Notify 📢**\n\n"
@@ -414,7 +414,7 @@ client = Client(command_prefix='!', intents=discord.Intents.default())
 
 
 ### Commands
-@client.tree.command(name='newgoal', description='Set a new goal')
+@client.tree.command(name='setgoal', description='Set a new goal')
 async def new_goal(interaction: discord.Interaction):
     await interaction.response.send_modal(GoalModal())
 

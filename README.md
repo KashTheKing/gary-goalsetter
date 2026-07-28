@@ -4,7 +4,7 @@ Discord accountability bot. You set a goal, pick friends to validate it, and the
 
 ## How it works
 
-1. `/newgoal` opens a modal: goal, optional deadline (`daily`, `YYYY-MM-DD`, or `YYYY-MM-DD HH:MM` UTC), how many validations you need, and the remind cooldown (default 10 min).
+1. `/setgoal` opens a modal: goal, optional deadline (`daily`, `YYYY-MM-DD`, or `YYYY-MM-DD HH:MM` UTC), how many validations you need, and the remind cooldown (default 10 min).
 2. You pick up to 5 validators (e.g. need 3 of 5 to sign off).
 3. The goal is posted as an embed in the goals channel with three buttons:
    - **Remind 🔔** — anyone (but you) pings you about your goal, rate-limited per person by your goal's cooldown.
@@ -15,7 +15,7 @@ Goals live in a local SQLite database (`gary.db`) and buttons keep working acros
 
 ## Commands
 
-- `/newgoal` — create a goal
+- `/setgoal` — create a goal
 - `/goals @member` — list a member's active goals
 - `/goal @member goal-id` — show one goal's embed with a jump link
 - `/cancelgoal goal-id` — cancel your own goal
