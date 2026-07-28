@@ -433,15 +433,32 @@ class SetupView(discord.ui.View):
 
     @discord.ui.button(label="Goals 📜", style=discord.ButtonStyle.secondary, custom_id="setup_goals")
     async def server_goals(self, interaction: discord.Interaction, button: discord.ui.Button):
-        rows = db.execute(
-            "SELECT * FROM goals WHERE guild_id=? AND completed=0 ORDER BY id",
-            (interaction.guild_id,),
-        ).fetchall()
-        if not rows:
-            await interaction.response.send_message("No active goals in this server.", ephemeral=True)
-            return
-        view = GoalListView("🎯 Server goals", rows)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await send_server_goals(interaction)
+
+
+async def send_server_goals(interaction: discord.Interaction):
+    rows = db.execute(
+        "SELECT * FROM goals WHERE guild_id=? AND completed=0 ORDER BY id",
+        (interaction.guild_id,),
+    ).fetchall()
+    if not rows:
+        await interaction.response.send_message("No active goals in this server.", ephemeral=True)
+        return
+    view = GoalListView("🎯 Server goals", rows)
+    await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+class NotifPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="New Goal 🎯", style=discord.ButtonStyle.green, custom_id="notif_newgoal")
+    async def new_goal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(GoalModal())
+
+    @discord.ui.button(label="Goals 📜", style=discord.ButtonStyle.secondary, custom_id="notif_goals")
+    async def server_goals(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await send_server_goals(interaction)
 
 
 def welcome_embed(channel: discord.TextChannel) -> discord.Embed:
@@ -463,6 +480,7 @@ class Client(commands.Bot):
     async def setup_hook(self):
         self.add_view(GoalView())
         self.add_view(SetupView())
+        self.add_view(NotifPanelView())
         self.tree.copy_global_to(guild=GUILD_ID)
         synced = await self.tree.sync(guild=GUILD_ID)
         print(f'Synced {len(synced)} commands')
@@ -554,6 +572,15 @@ async def set_notif_channel(interaction: discord.Interaction, channel: discord.T
         (interaction.guild_id, channel.id),
     )
     db.commit()
+    embed = discord.Embed(
+        title="📢 Goal notifications land here!",
+        color=discord.Color.green(),
+        description=(
+            "Reminders for opted-in members get broadcast to this channel.\n"
+            "Opt in with `/notifications` — or jump straight in below."
+        ),
+    )
+    await channel.send(embed=embed, view=NotifPanelView())
     await interaction.response.send_message(f"Notifications will go to {channel.mention}.", ephemeral=True)
 
 
