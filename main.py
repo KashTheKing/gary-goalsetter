@@ -503,8 +503,17 @@ class Client(commands.Bot):
         self.add_view(GoalView())
         self.add_view(SetupView())
         self.add_view(NotifPanelView())
-        synced = await self.tree.sync()
-        print(f'Synced {len(synced)} commands')
+        # If GUILD_ID is set (testing), sync to that guild for instant updates;
+        # otherwise sync globally (can take up to an hour to propagate).
+        guild_id = os.getenv('GUILD_ID')
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            print(f'Synced {len(synced)} commands to guild {guild_id}')
+        else:
+            synced = await self.tree.sync()
+            print(f'Synced {len(synced)} commands globally')
 
 
 client = Client(command_prefix='!', intents=discord.Intents.default())

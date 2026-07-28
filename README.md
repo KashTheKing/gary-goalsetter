@@ -35,6 +35,8 @@ Create a `.env` file:
 DISCORD_TOKEN=your-bot-token
 ```
 
+Optionally add `GUILD_ID=your-server-id` to sync commands to one server instantly (for testing); without it, commands sync globally (first propagation can take up to an hour).
+
 Run:
 
 ```
