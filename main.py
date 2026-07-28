@@ -560,24 +560,55 @@ async def show_goal(interaction: discord.Interaction, member: discord.Member, go
     )
 
 
-@client.tree.command(name='cancelgoal', description='Cancel one of your goals')
-async def cancel_goal(interaction: discord.Interaction, goal_id: int):
-    g = get_goal(goal_id)
-    if not g or g['user_id'] != interaction.user.id:
-        await interaction.response.send_message("That's not your goal.", ephemeral=True)
-        return
-    db.execute("DELETE FROM goals WHERE id=?", (goal_id,))
-    db.execute("DELETE FROM validators WHERE goal_id=?", (goal_id,))
-    db.execute("DELETE FROM reminds WHERE goal_id=?", (goal_id,))
+async def delete_goal(g):
+    db.execute("DELETE FROM goals WHERE id=?", (g['id'],))
+    db.execute("DELETE FROM validators WHERE goal_id=?", (g['id'],))
+    db.execute("DELETE FROM reminds WHERE goal_id=?", (g['id'],))
     db.commit()
     channel = client.get_channel(g['channel_id'])
     if isinstance(channel, discord.TextChannel):
         try:
             msg = await channel.fetch_message(g['message_id'])
             await msg.delete()
-        except discord.NotFound:
+        except (discord.NotFound, discord.Forbidden):
             pass
+
+
+@client.tree.command(name='cancelgoal', description='Cancel one of your goals')
+async def cancel_goal(interaction: discord.Interaction, goal_id: int):
+    g = get_goal(goal_id)
+    if not g or g['user_id'] != interaction.user.id or g['guild_id'] != interaction.guild_id:
+        await interaction.response.send_message("That's not your goal.", ephemeral=True)
+        return
+    await delete_goal(g)
     await interaction.response.send_message(f"Goal #{goal_id} cancelled.", ephemeral=True)
+
+
+@client.tree.command(name='deletegoal', description="Delete any goal by id (admin)")
+@app_commands.default_permissions(manage_guild=True)
+async def admin_delete_goal(interaction: discord.Interaction, goal_id: int):
+    g = get_goal(goal_id)
+    if not g or g['guild_id'] != interaction.guild_id:
+        await interaction.response.send_message("No such goal in this server.", ephemeral=True)
+        return
+    await delete_goal(g)
+    await interaction.response.send_message(f"Goal #{goal_id} deleted.", ephemeral=True)
+
+
+@client.tree.command(name='deletegoals', description="Delete all of a member's goals (admin)")
+@app_commands.default_permissions(manage_guild=True)
+async def admin_delete_goals(interaction: discord.Interaction, member: discord.Member):
+    rows = db.execute(
+        "SELECT * FROM goals WHERE guild_id=? AND user_id=?",
+        (interaction.guild_id, member.id),
+    ).fetchall()
+    if not rows:
+        await interaction.response.send_message(f"{member.mention} has no goals.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    for g in rows:
+        await delete_goal(g)
+    await interaction.followup.send(f"Deleted {len(rows)} goal(s) of {member.mention}.", ephemeral=True)
 
 
 @client.tree.command(name='setup', description='Set or create the goals and notifications channels (admin)')
