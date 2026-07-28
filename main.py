@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS goals(
 );
 CREATE TABLE IF NOT EXISTS validators(
     goal_id INTEGER, user_id INTEGER, validated INTEGER DEFAULT 0,
+    whitelisted INTEGER DEFAULT 1,  -- 0 = ad-hoc validator on an open goal
     PRIMARY KEY(goal_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS reminds(
@@ -48,6 +49,10 @@ CREATE TABLE IF NOT EXISTS points(
     PRIMARY KEY(guild_id, user_id)
 );
 """)
+try:
+    db.execute("ALTER TABLE validators ADD COLUMN whitelisted INTEGER DEFAULT 1")
+except sqlite3.OperationalError:
+    pass  # column already exists
 db.commit()
 
 
@@ -72,11 +77,13 @@ def goal_embed(g) -> discord.Embed:
     embed.add_field(name="Owner", value=f"<@{g['user_id']}>")
     if g['deadline']:
         embed.add_field(name="Deadline", value=f"<t:{g['deadline']}:f> (<t:{g['deadline']}:R>)")
-    embed.add_field(
-        name=f"Validation ({validated}/{g['required']})",
-        value="\n".join(f"{'✅' if v['validated'] else '⬜'} <@{v['user_id']}>" for v in vrows) or "No validators",
-        inline=False,
-    )
+    if any(not v['whitelisted'] for v in vrows) or not vrows:
+        # open goal: no whitelist, anyone can validate
+        names = "\n".join(f"✅ <@{v['user_id']}>" for v in vrows if v['validated'])
+        value = (names + "\n" if names else "") + "*Anyone can validate this goal.*"
+    else:
+        value = "\n".join(f"{'✅' if v['validated'] else '⬜'} <@{v['user_id']}>" for v in vrows)
+    embed.add_field(name=f"Validation ({validated}/{g['required']})", value=value, inline=False)
     embed.set_footer(text="✅ Goal completed! 💪" if g['completed'] else "Hold them accountable, fellas 💪")
     return embed
 
@@ -136,17 +143,24 @@ class GoalView(discord.ui.View):
         if not g or g['completed']:
             await interaction.response.send_message("This goal is no longer active.", ephemeral=True)
             return
+        if interaction.user.id == g['user_id']:
+            await interaction.response.send_message("You can't validate your own goal.", ephemeral=True)
+            return
+        has_whitelist = db.execute(
+            "SELECT 1 FROM validators WHERE goal_id=? AND whitelisted=1", (g['id'],)
+        ).fetchone()
         row = db.execute(
             "SELECT * FROM validators WHERE goal_id=? AND user_id=?", (g['id'], interaction.user.id)
         ).fetchone()
-        if not row:
+        if has_whitelist and not row:
             await interaction.response.send_message("You're not a validator for this goal.", ephemeral=True)
             return
-        if row['validated']:
+        if row and row['validated']:
             await interaction.response.send_message("You already validated this goal.", ephemeral=True)
             return
         db.execute(
-            "UPDATE validators SET validated=1 WHERE goal_id=? AND user_id=?",
+            "INSERT INTO validators(goal_id, user_id, validated, whitelisted) VALUES (?,?,1,0) "
+            "ON CONFLICT(goal_id, user_id) DO UPDATE SET validated=1",
             (g['id'], interaction.user.id),
         )
         count = db.execute(
@@ -216,8 +230,8 @@ class ValidatorPicker(discord.ui.View):
 
     @discord.ui.select(
         cls=discord.ui.UserSelect,
-        placeholder="Pick up to 5 people to validate your goal",
-        min_values=1,
+        placeholder="Whitelist up to 5 validators (empty = anyone can validate)",
+        min_values=0,
         max_values=5,
     )
     async def pick(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
@@ -226,9 +240,6 @@ class ValidatorPicker(discord.ui.View):
     @discord.ui.button(label="Post Goal 🎯", style=discord.ButtonStyle.green)
     async def post(self, interaction: discord.Interaction, button: discord.ui.Button):
         validators = self.children[0].values
-        if not validators:
-            await interaction.response.send_message("Pick at least one validator first.", ephemeral=True)
-            return
         goals_channel_id = get_setting(interaction.guild_id, 'goals_channel')
         channel = client.get_channel(goals_channel_id) if goals_channel_id else None
         if not isinstance(channel, discord.TextChannel):
@@ -236,7 +247,7 @@ class ValidatorPicker(discord.ui.View):
                 "No goals channel set. An admin can set one with /setchannel.", ephemeral=True
             )
             return
-        required = min(self.required, len(validators))
+        required = min(self.required, len(validators)) if validators else self.required
         cur = db.execute(
             "INSERT INTO goals(guild_id, user_id, description, deadline, required, cooldown,"
             " channel_id, created) VALUES (?,?,?,?,?,?,?,?)",
@@ -251,8 +262,9 @@ class ValidatorPicker(discord.ui.View):
         msg = await channel.send(embed=goal_embed(get_goal(goal_id)), view=GoalView())
         db.execute("UPDATE goals SET message_id=? WHERE id=?", (msg.id, goal_id))
         db.commit()
+        who = f"{required}/{len(validators)} whitelisted" if validators else f"{required} (anyone)"
         await interaction.response.edit_message(
-            content=f"Goal #{goal_id} posted in {channel.mention}! Needs {required}/{len(validators)} validations.",
+            content=f"Goal #{goal_id} posted in {channel.mention}! Needs {who} validations.",
             view=None,
         )
 
@@ -285,7 +297,7 @@ class GoalModal(discord.ui.Modal, title="New Goal"):
         cd_s = str(self.cooldown).strip()
         cooldown = max(1, int(cd_s)) * 60 if cd_s.isdigit() else 600
         await interaction.response.send_message(
-            "Now pick who has to validate your goal:",
+            "Pick who can validate your goal (leave empty to let anyone validate):",
             view=ValidatorPicker(str(self.description), deadline, required, cooldown),
             ephemeral=True,
         )
