@@ -1,252 +1,451 @@
 ### Imports
-import discord
-from discord.ext import commands
-from discord.ext import tasks
-from discord import app_commands
-import asyncio
-from datetime import datetime, timedelta
-import json
 import os
+import sqlite3
+import time
+from datetime import datetime, timezone
+
+import discord
+from discord import app_commands
+from discord.ext import commands
 from dotenv import load_dotenv
 
 load_dotenv()
+GUILD_ID = discord.Object(id=int(os.getenv('GUILD_ID', '1173015952816873502')))
 
 
-### Data saving
-DATA = "data.json"
+### Database
+# ponytail: sync sqlite3 — fine at server scale, swap to aiosqlite if it ever blocks
+db = sqlite3.connect('gary.db')
+db.row_factory = sqlite3.Row
+db.executescript("""
+CREATE TABLE IF NOT EXISTS goals(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER, user_id INTEGER,
+    description TEXT,
+    deadline INTEGER,              -- unix ts, NULL = open-ended
+    required INTEGER DEFAULT 1,    -- validations needed to complete
+    cooldown INTEGER DEFAULT 600,  -- remind/notify cooldown, seconds
+    channel_id INTEGER, message_id INTEGER,
+    completed INTEGER DEFAULT 0,
+    created INTEGER
+);
+CREATE TABLE IF NOT EXISTS validators(
+    goal_id INTEGER, user_id INTEGER, validated INTEGER DEFAULT 0,
+    PRIMARY KEY(goal_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS reminds(
+    goal_id INTEGER, user_id INTEGER, last INTEGER,
+    PRIMARY KEY(goal_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS settings(
+    guild_id INTEGER PRIMARY KEY, goals_channel INTEGER, notif_channel INTEGER
+);
+CREATE TABLE IF NOT EXISTS optins(
+    guild_id INTEGER, user_id INTEGER, PRIMARY KEY(guild_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS points(
+    guild_id INTEGER, user_id INTEGER, points INTEGER DEFAULT 0,
+    PRIMARY KEY(guild_id, user_id)
+);
+""")
+db.commit()
 
-def loadData():
-    if os.path.exists(DATA):
-        with open(DATA, 'r') as f:
-            return json.load(f)
-    return {'goals': {}, 'points': {}, 'channel_id': None, 'board_message_id': None}
 
-def saveData():
-    with open(DATA, 'w') as f:
-        json.dump(data, f, indent = 4)
+def get_goal(goal_id: int):
+    return db.execute("SELECT * FROM goals WHERE id=?", (goal_id,)).fetchone()
 
-# Init data
-data = loadData()
-goals = data['goals']
-points = data['points']
-channel_id = data.get('channel_id')
-board_message_id = data.get("board_message_id")
+
+def get_setting(guild_id: int, col: str):
+    row = db.execute("SELECT * FROM settings WHERE guild_id=?", (guild_id,)).fetchone()
+    return row[col] if row else None
+
+
+### Embed builder
+def goal_embed(g) -> discord.Embed:
+    vrows = db.execute("SELECT * FROM validators WHERE goal_id=?", (g['id'],)).fetchall()
+    validated = sum(v['validated'] for v in vrows)
+    embed = discord.Embed(
+        title=f"🎯 Goal #{g['id']}",
+        description=g['description'],
+        color=discord.Color.green() if g['completed'] else discord.Color.red(),
+    )
+    embed.add_field(name="Owner", value=f"<@{g['user_id']}>")
+    if g['deadline']:
+        embed.add_field(name="Deadline", value=f"<t:{g['deadline']}:f> (<t:{g['deadline']}:R>)")
+    embed.add_field(
+        name=f"Validation ({validated}/{g['required']})",
+        value="\n".join(f"{'✅' if v['validated'] else '⬜'} <@{v['user_id']}>" for v in vrows) or "No validators",
+        inline=False,
+    )
+    embed.set_footer(text="✅ Goal completed! 💪" if g['completed'] else "Hold them accountable, fellas 💪")
+    return embed
+
+
+### Goal buttons (persistent — survive restarts)
+class GoalView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    def _goal(self, interaction):
+        return db.execute(
+            "SELECT * FROM goals WHERE message_id=?", (interaction.message.id,)
+        ).fetchone()
+
+    def _on_cooldown(self, goal, user_id: int) -> int:
+        """Returns seconds remaining, 0 if free to act."""
+        row = db.execute(
+            "SELECT last FROM reminds WHERE goal_id=? AND user_id=?", (goal['id'], user_id)
+        ).fetchone()
+        if row:
+            remaining = row['last'] + goal['cooldown'] - int(time.time())
+            if remaining > 0:
+                return remaining
+        return 0
+
+    def _stamp(self, goal, user_id: int):
+        db.execute(
+            "INSERT OR REPLACE INTO reminds VALUES (?,?,?)",
+            (goal['id'], user_id, int(time.time())),
+        )
+        db.commit()
+
+    @discord.ui.button(label="Remind 🔔", style=discord.ButtonStyle.primary, custom_id="goal_remind")
+    async def remind(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = self._goal(interaction)
+        if not g or g['completed']:
+            await interaction.response.send_message("This goal is no longer active.", ephemeral=True)
+            return
+        if interaction.user.id == g['user_id']:
+            await interaction.response.send_message("You can't remind yourself. Get to work.", ephemeral=True)
+            return
+        remaining = self._on_cooldown(g, interaction.user.id)
+        if remaining:
+            await interaction.response.send_message(
+                f"Cooldown — you can remind again in {remaining // 60}m {remaining % 60}s.", ephemeral=True
+            )
+            return
+        self._stamp(g, interaction.user.id)
+        await interaction.response.send_message(
+            f"🔔 <@{g['user_id']}>, {interaction.user.mention} is reminding you of your goal: "
+            f"**{g['description']}**"
+        )
+
+    @discord.ui.button(label="Validate ✅", style=discord.ButtonStyle.green, custom_id="goal_validate")
+    async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = self._goal(interaction)
+        if not g or g['completed']:
+            await interaction.response.send_message("This goal is no longer active.", ephemeral=True)
+            return
+        row = db.execute(
+            "SELECT * FROM validators WHERE goal_id=? AND user_id=?", (g['id'], interaction.user.id)
+        ).fetchone()
+        if not row:
+            await interaction.response.send_message("You're not a validator for this goal.", ephemeral=True)
+            return
+        if row['validated']:
+            await interaction.response.send_message("You already validated this goal.", ephemeral=True)
+            return
+        db.execute(
+            "UPDATE validators SET validated=1 WHERE goal_id=? AND user_id=?",
+            (g['id'], interaction.user.id),
+        )
+        count = db.execute(
+            "SELECT COUNT(*) c FROM validators WHERE goal_id=? AND validated=1", (g['id'],)
+        ).fetchone()['c']
+        if count >= g['required']:
+            db.execute("UPDATE goals SET completed=1 WHERE id=?", (g['id'],))
+            db.execute(
+                "INSERT INTO points VALUES (?,?,1) "
+                "ON CONFLICT(guild_id,user_id) DO UPDATE SET points=points+1",
+                (g['guild_id'], g['user_id']),
+            )
+        db.commit()
+        g = get_goal(g['id'])
+        await interaction.response.edit_message(embed=goal_embed(g), view=None if g['completed'] else self)
+        if g['completed']:
+            await interaction.followup.send(
+                f"🎉 <@{g['user_id']}> completed their goal: **{g['description']}** (+1 point)"
+            )
+
+    @discord.ui.button(label="Notify 📢", style=discord.ButtonStyle.secondary, custom_id="goal_notify")
+    async def notify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = self._goal(interaction)
+        if not g or g['completed']:
+            await interaction.response.send_message("This goal is no longer active.", ephemeral=True)
+            return
+        notif_channel_id = get_setting(g['guild_id'], 'notif_channel')
+        if not notif_channel_id:
+            await interaction.response.send_message(
+                "No notifications channel set. An admin can set one with /setnotifchannel.", ephemeral=True
+            )
+            return
+        opted = db.execute(
+            "SELECT 1 FROM optins WHERE guild_id=? AND user_id=?", (g['guild_id'], g['user_id'])
+        ).fetchone()
+        if not opted:
+            await interaction.response.send_message(
+                "The goal owner hasn't opted into notifications (/notifications).", ephemeral=True
+            )
+            return
+        remaining = self._on_cooldown(g, interaction.user.id)
+        if remaining:
+            await interaction.response.send_message(
+                f"Cooldown — you can notify again in {remaining // 60}m {remaining % 60}s.", ephemeral=True
+            )
+            return
+        channel = client.get_channel(notif_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Notifications channel not found.", ephemeral=True)
+            return
+        self._stamp(g, interaction.user.id)
+        await channel.send(
+            f"📢 {interaction.user.mention} wants everyone to know about <@{g['user_id']}>'s goal:",
+            embed=goal_embed(g),
+        )
+        await interaction.response.send_message("Notification sent!", ephemeral=True)
+
+
+### Goal creation: modal → validator picker → post
+class ValidatorPicker(discord.ui.View):
+    def __init__(self, description, deadline, required, cooldown):
+        super().__init__(timeout=300)
+        self.description = description
+        self.deadline = deadline
+        self.required = required
+        self.cooldown = cooldown
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="Pick up to 5 people to validate your goal",
+        min_values=1,
+        max_values=5,
+    )
+    async def pick(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Post Goal 🎯", style=discord.ButtonStyle.green)
+    async def post(self, interaction: discord.Interaction, button: discord.ui.Button):
+        validators = self.children[0].values
+        if not validators:
+            await interaction.response.send_message("Pick at least one validator first.", ephemeral=True)
+            return
+        goals_channel_id = get_setting(interaction.guild_id, 'goals_channel')
+        channel = client.get_channel(goals_channel_id) if goals_channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "No goals channel set. An admin can set one with /setchannel.", ephemeral=True
+            )
+            return
+        required = min(self.required, len(validators))
+        cur = db.execute(
+            "INSERT INTO goals(guild_id, user_id, description, deadline, required, cooldown,"
+            " channel_id, created) VALUES (?,?,?,?,?,?,?,?)",
+            (interaction.guild_id, interaction.user.id, self.description, self.deadline,
+             required, self.cooldown, channel.id, int(time.time())),
+        )
+        goal_id = cur.lastrowid
+        db.executemany(
+            "INSERT INTO validators(goal_id, user_id) VALUES (?,?)",
+            [(goal_id, u.id) for u in validators],
+        )
+        msg = await channel.send(embed=goal_embed(get_goal(goal_id)), view=GoalView())
+        db.execute("UPDATE goals SET message_id=? WHERE id=?", (msg.id, goal_id))
+        db.commit()
+        await interaction.response.edit_message(
+            content=f"Goal #{goal_id} posted in {channel.mention}! Needs {required}/{len(validators)} validations.",
+            view=None,
+        )
+
+
+class GoalModal(discord.ui.Modal, title="New Goal"):
+    description = discord.ui.TextInput(label="What's your goal?", max_length=200)
+    deadline = discord.ui.TextInput(
+        label="Deadline (optional)",
+        placeholder="daily | YYYY-MM-DD | YYYY-MM-DD HH:MM (UTC)",
+        required=False,
+    )
+    required = discord.ui.TextInput(
+        label="Validations needed (default 1)", placeholder="e.g. 3", required=False
+    )
+    cooldown = discord.ui.TextInput(
+        label="Remind cooldown in minutes (default 10)", placeholder="e.g. 60", required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            deadline = parse_deadline(str(self.deadline))
+        except ValueError:
+            await interaction.response.send_message(
+                "Couldn't parse that deadline. Use `daily`, `YYYY-MM-DD`, or `YYYY-MM-DD HH:MM` (UTC).",
+                ephemeral=True,
+            )
+            return
+        req_s = str(self.required).strip()
+        required = max(1, int(req_s)) if req_s.isdigit() else 1
+        cd_s = str(self.cooldown).strip()
+        cooldown = max(1, int(cd_s)) * 60 if cd_s.isdigit() else 600
+        await interaction.response.send_message(
+            "Now pick who has to validate your goal:",
+            view=ValidatorPicker(str(self.description), deadline, required, cooldown),
+            ephemeral=True,
+        )
+
+
+def parse_deadline(s: str):
+    s = s.strip().lower()
+    if not s:
+        return None
+    now = datetime.now(timezone.utc)
+    if s == 'daily':
+        return int(now.replace(hour=23, minute=59, second=0, microsecond=0).timestamp())
+    for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%d'):
+        try:
+            return int(datetime.strptime(s, fmt).replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            pass
+    raise ValueError(s)
 
 
 ### Client
 class Client(commands.Bot):
-    async def on_ready(self):
-        try:
-            guild = discord.Object(id=1173015952816873502)
-            synced = await self.tree.sync(guild=guild)
-            print(f'Synced {len(synced)} commands to guild {guild.id}')
-            weekly_reset.start()  # start Sunday reset loop
-            await update_board(client)
-        except Exception as err:
-            print(f'Error syncing commands: {err}')
+    async def setup_hook(self):
+        self.add_view(GoalView())
+        self.tree.copy_global_to(guild=GUILD_ID)
+        synced = await self.tree.sync(guild=GUILD_ID)
+        print(f'Synced {len(synced)} commands')
 
 
-
-### Embed builders
-def build_board():
-    embed = discord.Embed(
-        title = "📋 Weekly Goals Board",
-        description = "Submit your goals with '/setgoal'!",
-        color = discord.Color.red()
-    )
-    if not goals:
-        embed.add_field(name = 'No goals yet wtf', value = 'Be the first to set one!', inline = False)
-    else:
-        for user_id, g in goals.items():
-            status = "✅ Completed" if g["completed"] else "❌ In Progress"
-            embed.add_field(
-                name = '--------------------',
-                value = f"<@{int(user_id)}>     |       **Goal:** {g['goal']}      |       **Status:** {status}",
-                inline = False
-            )
-    embed.set_footer(text = 'Lets get to work, fellas! 💪')
-    return embed
-
-
-def build_review():
-    embed = discord.Embed(
-        title = f"📋 Weekly Goal Review | {datetime.now().strftime("%B %d, %Y")}",
-        description = "Let's see how you all did...",
-        color = discord.Color.green()
-    )
-    if not goals:
-        embed.add_field(name = 'NO GOALS? TF ARE YOU GUYS DOING?', value = 'DO BETTER!', inline = False)
-        embed.set_footer(text = 'Disappointed as shit fellas. Not okay.')
-    else:
-        for user_id, g in goals.items():
-            status = "✅ They hit their goal!" if g["completed"] else "❌ They failed so fucking hard holy shit"
-            embed.add_field(
-                name = '--------------------',
-                value = f"<@{int(user_id)}> wanted to **{g['goal'].lower()}...**\n{status}",
-                inline = False
-            )
-        embed.set_footer(text = 'Keep it up, fellas! 💪')
-    return embed
-
-
-
-### Button
-class GoalView(discord.ui.View):
-    @discord.ui.button(label = "Mark as Complete ✔", style = discord.ButtonStyle.green)
-    async def complete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = str(interaction.user.id)
-        if user_id in goals:
-            goals[user_id]["completed"] = True
-            await interaction.response.edit_message(embed = build_board(), view = self)
-        else:
-            await interaction.response.send_message("You don’t have a goal set!", ephemeral = True)
-
-
-
-### Update Board
-async def update_board(bot: commands.Bot):
-    if not channel_id: return
-
-    channel = bot.get_channel(channel_id)
-    if not isinstance(channel, discord.TextChannel): return
-
-    global board_message_id
-    if board_message_id:
-        try:
-            msg = await channel.fetch_message(board_message_id)
-            await msg.edit(embed = build_board(), view = GoalView())
-            return
-        except discord.NotFound:
-            board_message_id = None  # reset if message deleted
-
-    # If no board exists, create one
-    new_msg = await channel.send(embed = build_board(), view = GoalView())
-    board_message_id = new_msg.id
-    data["board_message_id"] = board_message_id
-    saveData()
-
-
-
-### Refresh
-async def refresh():
-    global board_message_id
-
-    if channel_id:
-            channel = client.get_channel(channel_id)
-            if channel and isinstance(channel, discord.TextChannel):
-                # Post review board
-                await channel.send(embed = build_review())
-                await asyncio.sleep(5)
-
-                # Delete old board if still active
-                if board_message_id:
-                    try:
-                        old_msg = await channel.fetch_message(board_message_id)
-                        await old_msg.delete()
-                    except discord.NotFound:
-                        pass
-                    board_message_id = None
-
-                # Add points
-                for user_id, g in goals.items():
-                    if g['completed'] == True:
-                        points[user_id] = points.get(user_id, 0) + 1
-
-                # Reset goals
-                goals.clear()
-                data['goals'] = {}
-                data['board_message_id'] = None
-                data['points'] = points
-                saveData()
-
-                await update_board(client)
-
-
-
-### Setup
-intents = discord.Intents.default()
-intents.message_content = True
-client = Client(command_prefix = '!', intents=intents)
-GUILD_ID = discord.Object(id = 1173015952816873502)
-
+client = Client(command_prefix='!', intents=discord.Intents.default())
 
 
 ### Commands
+@client.tree.command(name='newgoal', description='Set a new goal')
+async def new_goal(interaction: discord.Interaction):
+    await interaction.response.send_modal(GoalModal())
 
-# Set channel for Gary to talk in
-@client.tree.command(name = 'setchannel', description = 'Set the channel for Gary to post in', guild = GUILD_ID)
-async def setChannel(interaction: discord.Interaction, channel: discord.TextChannel):
-    global channel_id
-    channel_id = channel.id
-    data['channel_id'] = channel_id
-    data["board_message_id"] = None
-    saveData()
 
-    await update_board(client)
-    await interaction.response.send_message(f"Gary will now post in {channel.mention}", ephemeral = True)
-
-# Set goal for the week
-@client.tree.command(name = 'setgoal', description = 'Set a goal for the week', guild = GUILD_ID)
-async def setGoal(interaction: discord.Interaction, goal: str):
-    goals[str(interaction.user.id)] = {'goal': goal, 'completed': False}
-    saveData()
-    await update_board(client)
-    await interaction.response.send_message(
-        "Goal set!",
-        ephemeral = True)
-
-# Force show the board
-@client.tree.command(name = 'forcerefresh', description = 'Run end of week command', guild = GUILD_ID)
-async def forceRefresh(interaction: discord.Interaction):
-    await interaction.response.send_message('Running command!', ephemeral = True)
-    await refresh()
-
-# Check your points
-@client.tree.command(name = 'points', description = 'Check points of member', guild = GUILD_ID)
-async def checkPoints(interaction: discord.Interaction, member: discord.Member):
-    member = member or interaction.user
-    total = points.get(str(member.id), 0)
-    await interaction.response.send_message(
-        f"{member.mention} has **{total}** points!",
-        ephemeral = False
-    )
-
-# Display leaderboard command
-@client.tree.command(name = 'leaderboard', description = 'Display points leaderboard', guild = GUILD_ID)
-async def leaderboard(interaction: discord.Interaction):
-    if not points: await interaction.response.send_message("Nobody has points!", ephemeral = True); return
-
-    sortedPoints = sorted(points.items(), key = lambda x: x[1], reverse = True)[:5]
-
-    embed = discord.Embed(
-        title = "🏆 Gary's Little Stars!",
-        description = "Top 5 members with the most points",
-        color = discord.Color.gold()
-    )
-
-    for x, (user_id, score) in enumerate(sortedPoints, start = 1):
-        user = client.get_user(int(user_id))
-       
-        embed.add_field(
-                name = f"#{x}",
-                value = f"<@{int(user_id)}> with {score} points!",
-                inline = False,
-            )
-
-    embed.set_footer(text="Keep grinding those goals 💪")
+@client.tree.command(name='goals', description="List a member's active goals")
+async def list_goals(interaction: discord.Interaction, member: discord.Member):
+    rows = db.execute(
+        "SELECT * FROM goals WHERE guild_id=? AND user_id=? AND completed=0 ORDER BY id",
+        (interaction.guild_id, member.id),
+    ).fetchall()
+    if not rows:
+        await interaction.response.send_message(f"{member.mention} has no active goals.", ephemeral=True)
+        return
+    embed = discord.Embed(title=f"🎯 Active goals — {member.display_name}", color=discord.Color.red())
+    for g in rows:
+        deadline = f" — due <t:{g['deadline']}:R>" if g['deadline'] else ""
+        embed.add_field(name=f"Goal #{g['id']}", value=f"{g['description']}{deadline}", inline=False)
+    embed.set_footer(text="Use /goal to view one in detail")
     await interaction.response.send_message(embed=embed)
 
 
+@client.tree.command(name='goal', description="Show a specific goal's embed")
+async def show_goal(interaction: discord.Interaction, member: discord.Member, goal_id: int):
+    g = get_goal(goal_id)
+    if not g or g['user_id'] != member.id or g['guild_id'] != interaction.guild_id:
+        await interaction.response.send_message("No such goal for that member.", ephemeral=True)
+        return
+    jump = f"https://discord.com/channels/{g['guild_id']}/{g['channel_id']}/{g['message_id']}"
+    await interaction.response.send_message(
+        f"[Jump to goal message]({jump})", embed=goal_embed(g), ephemeral=True
+    )
 
-### Main Loop
-@tasks.loop(minutes=60)
-async def weekly_reset():
-    now = datetime.now()
 
-    # Sunday 18:00 UTC
-    if now.weekday() == 6 and now.hour == 18:
-        await refresh()
+@client.tree.command(name='cancelgoal', description='Cancel one of your goals')
+async def cancel_goal(interaction: discord.Interaction, goal_id: int):
+    g = get_goal(goal_id)
+    if not g or g['user_id'] != interaction.user.id:
+        await interaction.response.send_message("That's not your goal.", ephemeral=True)
+        return
+    db.execute("DELETE FROM goals WHERE id=?", (goal_id,))
+    db.execute("DELETE FROM validators WHERE goal_id=?", (goal_id,))
+    db.execute("DELETE FROM reminds WHERE goal_id=?", (goal_id,))
+    db.commit()
+    channel = client.get_channel(g['channel_id'])
+    if isinstance(channel, discord.TextChannel):
+        try:
+            msg = await channel.fetch_message(g['message_id'])
+            await msg.delete()
+        except discord.NotFound:
+            pass
+    await interaction.response.send_message(f"Goal #{goal_id} cancelled.", ephemeral=True)
 
+
+@client.tree.command(name='setchannel', description='Set the goals channel (admin)')
+@app_commands.default_permissions(manage_guild=True)
+async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    db.execute(
+        "INSERT INTO settings(guild_id, goals_channel) VALUES (?,?) "
+        "ON CONFLICT(guild_id) DO UPDATE SET goals_channel=excluded.goals_channel",
+        (interaction.guild_id, channel.id),
+    )
+    db.commit()
+    await interaction.response.send_message(f"Goals will be posted in {channel.mention}.", ephemeral=True)
+
+
+@client.tree.command(name='setnotifchannel', description='Set the notifications channel (admin)')
+@app_commands.default_permissions(manage_guild=True)
+async def set_notif_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    db.execute(
+        "INSERT INTO settings(guild_id, notif_channel) VALUES (?,?) "
+        "ON CONFLICT(guild_id) DO UPDATE SET notif_channel=excluded.notif_channel",
+        (interaction.guild_id, channel.id),
+    )
+    db.commit()
+    await interaction.response.send_message(f"Notifications will go to {channel.mention}.", ephemeral=True)
+
+
+@client.tree.command(name='notifications', description='Opt in/out of goal notifications')
+async def notifications(interaction: discord.Interaction):
+    opted = db.execute(
+        "SELECT 1 FROM optins WHERE guild_id=? AND user_id=?",
+        (interaction.guild_id, interaction.user.id),
+    ).fetchone()
+    if opted:
+        db.execute(
+            "DELETE FROM optins WHERE guild_id=? AND user_id=?",
+            (interaction.guild_id, interaction.user.id),
+        )
+        text = "You've opted **out** of goal notifications."
+    else:
+        db.execute(
+            "INSERT INTO optins VALUES (?,?)", (interaction.guild_id, interaction.user.id)
+        )
+        text = "You've opted **in** to goal notifications."
+    db.commit()
+    await interaction.response.send_message(text, ephemeral=True)
+
+
+@client.tree.command(name='points', description="Check a member's points")
+async def check_points(interaction: discord.Interaction, member: discord.Member):
+    row = db.execute(
+        "SELECT points FROM points WHERE guild_id=? AND user_id=?",
+        (interaction.guild_id, member.id),
+    ).fetchone()
+    total = row['points'] if row else 0
+    await interaction.response.send_message(f"{member.mention} has **{total}** points!")
+
+
+@client.tree.command(name='leaderboard', description='Display points leaderboard')
+async def leaderboard(interaction: discord.Interaction):
+    rows = db.execute(
+        "SELECT user_id, points FROM points WHERE guild_id=? ORDER BY points DESC LIMIT 5",
+        (interaction.guild_id,),
+    ).fetchall()
+    if not rows:
+        await interaction.response.send_message("Nobody has points!", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title="🏆 Gary's Little Stars!",
+        description="Top 5 members with the most points",
+        color=discord.Color.gold(),
+    )
+    for rank, row in enumerate(rows, start=1):
+        embed.add_field(name=f"#{rank}", value=f"<@{row['user_id']}> with {row['points']} points!", inline=False)
+    embed.set_footer(text="Keep grinding those goals 💪")
+    await interaction.response.send_message(embed=embed)
 
 
 ### Run

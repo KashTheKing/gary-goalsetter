@@ -1,14 +1,27 @@
 # Gary Goalsetter
 
-Discord bot for weekly goal tracking. Members set a goal with `/setgoal`, mark it complete on the board, and earn points at the Sunday reset.
+Discord accountability bot. You set a goal, pick friends to validate it, and the server holds you to it — Gary just keeps score.
+
+## How it works
+
+1. `/newgoal` opens a modal: goal, optional deadline (`daily`, `YYYY-MM-DD`, or `YYYY-MM-DD HH:MM` UTC), how many validations you need, and the remind cooldown (default 10 min).
+2. You pick up to 5 validators (e.g. need 3 of 5 to sign off).
+3. The goal is posted as an embed in the goals channel with three buttons:
+   - **Remind 🔔** — anyone (but you) pings you about your goal, rate-limited per person by your goal's cooldown.
+   - **Validate ✅** — only your chosen validators can click; when enough do, the goal completes and you earn a point.
+   - **Notify 📢** — posts the goal to the server's notifications channel, if you've opted in.
+
+Goals live in a local SQLite database (`gary.db`) and buttons keep working across restarts.
 
 ## Commands
 
-- `/setchannel` — set the channel Gary posts in
-- `/setgoal` — set your goal for the week
-- `/points` — check a member's points
-- `/leaderboard` — top 5 point holders
-- `/forcerefresh` — run the weekly review/reset now
+- `/newgoal` — create a goal
+- `/goals @member` — list a member's active goals
+- `/goal @member goal-id` — show one goal's embed with a jump link
+- `/cancelgoal goal-id` — cancel your own goal
+- `/notifications` — opt in/out of the Notify button for your goals
+- `/points @member`, `/leaderboard` — the score
+- `/setchannel`, `/setnotifchannel` — admin: pick the goals / notifications channels
 
 ## Setup
 
@@ -20,6 +33,7 @@ Create a `.env` file:
 
 ```
 DISCORD_TOKEN=your-bot-token
+GUILD_ID=your-server-id
 ```
 
 Run:
