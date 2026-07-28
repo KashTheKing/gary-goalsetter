@@ -1,5 +1,7 @@
 # Gary Goalsetter
 
+<img src="Gary%20Goalsetter.png" alt="Gary Goalsetter" width="200">
+
 Discord accountability bot. You set a goal, pick friends to validate it, and the server holds you to it — Gary just keeps score.
 
 ## How it works
