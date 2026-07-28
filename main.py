@@ -342,6 +342,53 @@ def parse_deadline(s: str):
     raise ValueError(s)
 
 
+### Paginated goal lists
+PAGE_SIZE = 5
+
+
+class GoalListView(discord.ui.View):
+    def __init__(self, title: str, rows):
+        super().__init__(timeout=300)
+        self.title = title
+        self.rows = rows
+        self.page = 0
+        self.pages = max(1, -(-len(rows) // PAGE_SIZE))
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.children[0].disabled = self.page == 0
+        self.children[1].disabled = self.page >= self.pages - 1
+
+    def embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"{self.title} (Page {self.page + 1}/{self.pages})",
+            color=discord.Color.red(),
+        )
+        now = int(time.time())
+        for g in self.rows[self.page * PAGE_SIZE:(self.page + 1) * PAGE_SIZE]:
+            expired = g['deadline'] and g['deadline'] < now
+            deadline = f" — {'⌛ expired' if expired else 'due'} <t:{g['deadline']}:R>" if g['deadline'] else ""
+            embed.add_field(
+                name=f"Goal #{g['id']}",
+                value=f"<@{g['user_id']}>: {g['description']}{deadline}",
+                inline=False,
+            )
+        embed.set_footer(text="Use /goal to view one, /copygoal to reuse one")
+        return embed
+
+    @discord.ui.button(label="◀ Last Page", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Next Page ▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.pages - 1, self.page + 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
 ### Setup / welcome message
 class SetupView(discord.ui.View):
     def __init__(self):
@@ -379,6 +426,22 @@ class SetupView(discord.ui.View):
             ),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="New Goal 🎯", style=discord.ButtonStyle.green, custom_id="setup_newgoal")
+    async def new_goal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(GoalModal())
+
+    @discord.ui.button(label="Goals 📜", style=discord.ButtonStyle.secondary, custom_id="setup_goals")
+    async def server_goals(self, interaction: discord.Interaction, button: discord.ui.Button):
+        rows = db.execute(
+            "SELECT * FROM goals WHERE guild_id=? AND completed=0 ORDER BY id",
+            (interaction.guild_id,),
+        ).fetchall()
+        if not rows:
+            await interaction.response.send_message("No active goals in this server.", ephemeral=True)
+            return
+        view = GoalListView("🎯 Server goals", rows)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
 def welcome_embed(channel: discord.TextChannel) -> discord.Embed:
@@ -424,14 +487,8 @@ async def list_goals(interaction: discord.Interaction, member: discord.Member = 
     if not rows:
         await interaction.response.send_message(f"{member.mention} has no active goals.", ephemeral=True)
         return
-    now = int(time.time())
-    embed = discord.Embed(title=f"🎯 Goals — {member.display_name}", color=discord.Color.red())
-    for g in rows:
-        expired = g['deadline'] and g['deadline'] < now
-        deadline = f" — {'⌛ expired' if expired else 'due'} <t:{g['deadline']}:R>" if g['deadline'] else ""
-        embed.add_field(name=f"Goal #{g['id']}", value=f"{g['description']}{deadline}", inline=False)
-    embed.set_footer(text="Use /goal to view one, /copygoal to reuse one")
-    await interaction.response.send_message(embed=embed)
+    view = GoalListView(f"🎯 Goals — {member.display_name}", rows)
+    await interaction.response.send_message(embed=view.embed(), view=view)
 
 
 @client.tree.command(name='copygoal', description='Create a new goal from an old one')
