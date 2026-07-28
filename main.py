@@ -717,20 +717,30 @@ async def check_points(interaction: discord.Interaction, member: discord.Member)
 @client.tree.command(name='leaderboard', description='Display points leaderboard')
 async def leaderboard(interaction: discord.Interaction):
     rows = db.execute(
-        "SELECT user_id, points FROM points WHERE guild_id=? ORDER BY points DESC LIMIT 5",
+        "SELECT user_id, points FROM points WHERE guild_id=? ORDER BY points DESC LIMIT 10",
         (interaction.guild_id,),
     ).fetchall()
     if not rows:
         await interaction.response.send_message("Nobody has points!", ephemeral=True)
         return
+    medals = {1: '🥇', 2: '🥈', 3: '🥉'}
+    lines = [
+        f"{medals.get(rank, f'`#{rank}`')} <@{row['user_id']}> — **{row['points']}** point{'s' if row['points'] != 1 else ''}"
+        for rank, row in enumerate(rows, start=1)
+    ]
     embed = discord.Embed(
         title="🏆 Gary's Little Stars!",
-        description="Top 5 members with the most points",
+        description="\n".join(lines),
         color=discord.Color.gold(),
     )
-    for rank, row in enumerate(rows, start=1):
-        embed.add_field(name=f"#{rank}", value=f"<@{row['user_id']}> with {row['points']} points!", inline=False)
-    embed.set_footer(text="Keep grinding those goals 💪")
+    if interaction.user.id not in [r['user_id'] for r in rows]:
+        mine = db.execute(
+            "SELECT points FROM points WHERE guild_id=? AND user_id=?",
+            (interaction.guild_id, interaction.user.id),
+        ).fetchone()
+        embed.set_footer(text=f"You have {mine['points'] if mine else 0} points. Keep grinding 💪")
+    else:
+        embed.set_footer(text="Keep grinding those goals 💪")
     await interaction.response.send_message(embed=embed)
 
 
