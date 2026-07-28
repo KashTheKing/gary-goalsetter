@@ -1,5 +1,6 @@
 ### Imports
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -280,7 +281,9 @@ class GoalModal(discord.ui.Modal, title="New Goal"):
         label="Validations needed (default 1)", placeholder="e.g. 3", required=False
     )
     cooldown = discord.ui.TextInput(
-        label="Remind cooldown in minutes (default 10)", placeholder="e.g. 60", required=False
+        label="Remind cooldown (default 10m)",
+        placeholder="e.g. 30 (seconds), 15m, 2hr, 1day, 1w",
+        required=False,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -295,12 +298,38 @@ class GoalModal(discord.ui.Modal, title="New Goal"):
         req_s = str(self.required).strip()
         required = max(1, int(req_s)) if req_s.isdigit() else 1
         cd_s = str(self.cooldown).strip()
-        cooldown = max(1, int(cd_s)) * 60 if cd_s.isdigit() else 600
+        try:
+            cooldown = max(1, parse_duration(cd_s)) if cd_s else 600
+        except ValueError:
+            await interaction.response.send_message(
+                "Couldn't parse that cooldown. Use e.g. `30` (seconds), `15m`, `2hr`, `1day`, `1w`.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_message(
             "Pick who can validate your goal (leave empty to let anyone validate):",
             view=ValidatorPicker(str(self.description), deadline, required, cooldown),
             ephemeral=True,
         )
+
+
+DURATION_UNITS = {
+    's': 1, 'sec': 1, 'secs': 1, 'second': 1, 'seconds': 1,
+    'm': 60, 'min': 60, 'mins': 60, 'minute': 60, 'minutes': 60,
+    'h': 3600, 'hr': 3600, 'hrs': 3600, 'hour': 3600, 'hours': 3600,
+    'd': 86400, 'day': 86400, 'days': 86400,
+    'w': 604800, 'wk': 604800, 'week': 604800, 'weeks': 604800,
+    'mo': 2592000, 'mon': 2592000, 'month': 2592000, 'months': 2592000,
+    'y': 31536000, 'yr': 31536000, 'year': 31536000, 'years': 31536000,
+}
+
+
+def parse_duration(s: str) -> int:
+    """'15' = 15s, '1m', '2hr', '1day', '1w', '1mo', '1y'. Raises ValueError."""
+    match = re.fullmatch(r'(\d+)\s*([a-z]*)', s.strip().lower())
+    if not match or (match[2] and match[2] not in DURATION_UNITS):
+        raise ValueError(s)
+    return int(match[1]) * DURATION_UNITS.get(match[2], 1)
 
 
 def parse_deadline(s: str):
