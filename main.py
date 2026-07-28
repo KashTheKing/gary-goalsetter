@@ -185,17 +185,18 @@ class GoalView(discord.ui.View):
         ).fetchone()['c']
         if count >= g['required']:
             db.execute("UPDATE goals SET completed=1 WHERE id=?", (g['id'],))
+            # more validations required = more points
             db.execute(
-                "INSERT INTO points VALUES (?,?,1) "
-                "ON CONFLICT(guild_id,user_id) DO UPDATE SET points=points+1",
-                (g['guild_id'], g['user_id']),
+                "INSERT INTO points VALUES (?,?,?) "
+                "ON CONFLICT(guild_id,user_id) DO UPDATE SET points=points+excluded.points",
+                (g['guild_id'], g['user_id'], g['required']),
             )
         db.commit()
         g = get_goal(g['id'])
         await interaction.response.edit_message(embed=goal_embed(g), view=None if g['completed'] else self)
         if g['completed']:
             await interaction.followup.send(
-                f"🎉 <@{g['user_id']}> completed their goal: **{g['description']}** (+1 point)"
+                f"🎉 <@{g['user_id']}> completed their goal: **{g['description']}** (+{g['required']} point{'s' if g['required'] != 1 else ''})"
             )
 
 

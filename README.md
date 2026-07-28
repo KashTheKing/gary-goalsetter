@@ -19,7 +19,7 @@ Don't want to host your own? [Invite the official bot](https://discord.com/oauth
 3. Next, whitelist up to 5 validators (e.g. require 3 of 5). **Leave it empty and anyone in the server can validate.**
 4. The goal is posted as an embed in the goals channel with three buttons:
    - **Remind 🔔** — anyone (except you) pings you about your goal, rate-limited per person by your goal's cooldown. If you've opted into notifications and a notifications channel is set, the reminder is broadcast there too.
-   - **Validate ✅** — whitelisted validators (or anyone, if open) sign off. You can't validate your own goal. When enough validations land, the goal turns green, buttons are removed, a 🎉 announcement is posted, and you earn **+1 point**.
+   - **Validate ✅** — whitelisted validators (or anyone, if open) sign off. You can't validate your own goal. When enough validations land, the goal turns green, buttons are removed, a 🎉 announcement is posted, and you earn **1 point per required validation** (a 3-validation goal pays 3 points).
    - **Copy 📋** — opens the goal modal pre-filled with that goal's text, validation count, and cooldown (deadline left blank) so anyone can reuse it.
 
 Everything is stored per-server in a local SQLite database (`gary.db`); buttons keep working across bot restarts.
