@@ -33,7 +33,6 @@ Create a `.env` file:
 
 ```
 DISCORD_TOKEN=your-bot-token
-GUILD_ID=your-server-id
 ```
 
 Run:

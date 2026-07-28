@@ -11,7 +11,6 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 load_dotenv()
-GUILD_ID = discord.Object(id=int(os.getenv('GUILD_ID', '1173015952816873502')))
 
 
 ### Database
@@ -460,6 +459,18 @@ class NotifPanelView(discord.ui.View):
     async def server_goals(self, interaction: discord.Interaction, button: discord.ui.Button):
         await send_server_goals(interaction)
 
+    @discord.ui.button(label="Opt In 🔔", style=discord.ButtonStyle.primary, custom_id="notif_optin")
+    async def opt_in(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            set_optin(interaction.guild_id, interaction.user.id, True), ephemeral=True
+        )
+
+    @discord.ui.button(label="Opt Out 🔕", style=discord.ButtonStyle.secondary, custom_id="notif_optout")
+    async def opt_out(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            set_optin(interaction.guild_id, interaction.user.id, False), ephemeral=True
+        )
+
 
 def notif_embed() -> discord.Embed:
     return discord.Embed(
@@ -467,7 +478,7 @@ def notif_embed() -> discord.Embed:
         color=discord.Color.green(),
         description=(
             "Reminders for opted-in members get broadcast to this channel.\n"
-            "Opt in with `/notifications` — or jump straight in below."
+            "Use the **Opt In 🔔** / **Opt Out 🔕** buttons below (or `/notifications`)."
         ),
     )
 
@@ -492,8 +503,7 @@ class Client(commands.Bot):
         self.add_view(GoalView())
         self.add_view(SetupView())
         self.add_view(NotifPanelView())
-        self.tree.copy_global_to(guild=GUILD_ID)
-        synced = await self.tree.sync(guild=GUILD_ID)
+        synced = await self.tree.sync()
         print(f'Synced {len(synced)} commands')
 
 
@@ -632,25 +642,26 @@ async def set_notif_channel(interaction: discord.Interaction, channel: discord.T
     await interaction.response.send_message(f"Notifications will go to {channel.mention}.", ephemeral=True)
 
 
+def set_optin(guild_id: int, user_id: int, opt_in: bool) -> str:
+    if opt_in:
+        db.execute("INSERT OR IGNORE INTO optins VALUES (?,?)", (guild_id, user_id))
+        text = "You've opted **in** to goal notifications."
+    else:
+        db.execute("DELETE FROM optins WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+        text = "You've opted **out** of goal notifications."
+    db.commit()
+    return text
+
+
 @client.tree.command(name='notifications', description='Opt in/out of goal notifications')
 async def notifications(interaction: discord.Interaction):
     opted = db.execute(
         "SELECT 1 FROM optins WHERE guild_id=? AND user_id=?",
         (interaction.guild_id, interaction.user.id),
     ).fetchone()
-    if opted:
-        db.execute(
-            "DELETE FROM optins WHERE guild_id=? AND user_id=?",
-            (interaction.guild_id, interaction.user.id),
-        )
-        text = "You've opted **out** of goal notifications."
-    else:
-        db.execute(
-            "INSERT INTO optins VALUES (?,?)", (interaction.guild_id, interaction.user.id)
-        )
-        text = "You've opted **in** to goal notifications."
-    db.commit()
-    await interaction.response.send_message(text, ephemeral=True)
+    await interaction.response.send_message(
+        set_optin(interaction.guild_id, interaction.user.id, not opted), ephemeral=True
+    )
 
 
 @client.tree.command(name='points', description="Check a member's points")
