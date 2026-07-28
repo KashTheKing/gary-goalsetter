@@ -721,7 +721,7 @@ async def leaderboard(interaction: discord.Interaction):
         (interaction.guild_id,),
     ).fetchall()
     if not rows:
-        await interaction.response.send_message("Nobody has points!", ephemeral=True)
+        await interaction.response.send_message("Nobody has points yet — complete a goal to get on the board!")
         return
     medals = {1: '🥇', 2: '🥈', 3: '🥉'}
     lines = [
