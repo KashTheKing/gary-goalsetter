@@ -306,10 +306,64 @@ def parse_deadline(s: str):
     raise ValueError(s)
 
 
+### Setup / welcome message
+class SetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Server Setup 🛠", style=discord.ButtonStyle.primary, custom_id="setup_server")
+    async def server_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Admins only (needs Manage Server).", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="🛠 Server Setup",
+            color=discord.Color.blurple(),
+            description=(
+                "1. `/setchannel #channel` — where goals get posted (done if you're reading this here!)\n"
+                "2. `/setnotifchannel #channel` — where the **Notify 📢** button broadcasts goals\n\n"
+                "That's it. Gary needs View Channel, Send Messages, and Embed Links in both channels."
+            ),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="User Setup 👤", style=discord.ButtonStyle.secondary, custom_id="setup_user")
+    async def user_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="👤 User Setup",
+            color=discord.Color.blurple(),
+            description=(
+                "1. `/newgoal` — set your goal, an optional deadline, how many validations "
+                "you need, and the remind cooldown\n"
+                "2. Pick up to 5 people to validate your goal (e.g. need 3 of 5)\n"
+                "3. `/notifications` — opt in so people can broadcast your goal with **Notify 📢**\n\n"
+                "On each goal: **Remind 🔔** pings the owner, **Validate ✅** is for the chosen "
+                "validators — enough validations completes the goal and earns a point.\n"
+                "Check progress with `/goals @member`, `/points`, and `/leaderboard`."
+            ),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+def welcome_embed(channel: discord.TextChannel) -> discord.Embed:
+    return discord.Embed(
+        title="🎯 Gary Goalsetter is set up!",
+        color=discord.Color.green(),
+        description=(
+            f"Goals will now be posted in {channel.mention}.\n\n"
+            "**What's Gary?** An accountability bot. You set a goal, pick friends to validate it, "
+            "and the server holds you to it — Gary just keeps score. Goals stay up until enough "
+            "of your chosen validators sign off, and completed goals earn points.\n\n"
+            "Click a button below to get started."
+        ),
+    )
+
+
 ### Client
 class Client(commands.Bot):
     async def setup_hook(self):
         self.add_view(GoalView())
+        self.add_view(SetupView())
         self.tree.copy_global_to(guild=GUILD_ID)
         synced = await self.tree.sync(guild=GUILD_ID)
         print(f'Synced {len(synced)} commands')
@@ -382,6 +436,7 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
         (interaction.guild_id, channel.id),
     )
     db.commit()
+    await channel.send(embed=welcome_embed(channel), view=SetupView())
     await interaction.response.send_message(f"Goals will be posted in {channel.mention}.", ephemeral=True)
 
 
