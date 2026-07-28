@@ -25,7 +25,11 @@ Goals live in a local SQLite database (`gary.db`) and buttons keep working acros
 - `/points @member`, `/leaderboard` — the score
 - `/setchannel`, `/setnotifchannel` — admin: pick the goals / notifications channels
 
-## Setup
+## Add Gary to your server
+
+Don't want to host your own? [Invite the official bot](https://discord.com/oauth2/authorize?client_id=1418733344430231565&permissions=85008&integration_type=0&scope=bot+applications.commands), then run `/setup` in your server.
+
+## Self-hosting
 
 ```
 pip install -r requirements.txt
