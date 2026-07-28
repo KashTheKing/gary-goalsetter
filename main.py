@@ -461,6 +461,17 @@ class NotifPanelView(discord.ui.View):
         await send_server_goals(interaction)
 
 
+def notif_embed() -> discord.Embed:
+    return discord.Embed(
+        title="📢 Goal notifications land here!",
+        color=discord.Color.green(),
+        description=(
+            "Reminders for opted-in members get broadcast to this channel.\n"
+            "Opt in with `/notifications` — or jump straight in below."
+        ),
+    )
+
+
 def welcome_embed(channel: discord.TextChannel) -> discord.Embed:
     return discord.Embed(
         title="🎯 Gary Goalsetter is set up!",
@@ -550,6 +561,51 @@ async def cancel_goal(interaction: discord.Interaction, goal_id: int):
     await interaction.response.send_message(f"Goal #{goal_id} cancelled.", ephemeral=True)
 
 
+@client.tree.command(name='setup', description='Set or create the goals and notifications channels (admin)')
+@app_commands.default_permissions(manage_guild=True)
+async def setup_server(
+    interaction: discord.Interaction,
+    goals_channel: discord.TextChannel = None,
+    notif_channel: discord.TextChannel = None,
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    made = []
+    if not goals_channel:
+        # read-only for members; admins bypass overwrites via Manage Channels/Administrator
+        goals_channel = await guild.create_text_channel(
+            'goals',
+            overwrites={
+                guild.default_role: discord.PermissionOverwrite(send_messages=False),
+                guild.me: discord.PermissionOverwrite(send_messages=True),
+            },
+            reason='Gary Goalsetter setup',
+        )
+        made.append(goals_channel.mention)
+    if not notif_channel:
+        notif_channel = await guild.create_text_channel(
+            'goal-notifications',
+            overwrites={guild.me: discord.PermissionOverwrite(send_messages=True)},
+            reason='Gary Goalsetter setup',
+        )
+        made.append(notif_channel.mention)
+    db.execute(
+        "INSERT INTO settings(guild_id, goals_channel, notif_channel) VALUES (?,?,?) "
+        "ON CONFLICT(guild_id) DO UPDATE SET goals_channel=excluded.goals_channel,"
+        " notif_channel=excluded.notif_channel",
+        (guild.id, goals_channel.id, notif_channel.id),
+    )
+    db.commit()
+    await goals_channel.send(embed=welcome_embed(goals_channel), view=SetupView())
+    await notif_channel.send(embed=notif_embed(), view=NotifPanelView())
+    created = f" (created {', '.join(made)})" if made else ""
+    await interaction.followup.send(
+        f"Setup complete{created}: goals in {goals_channel.mention}, "
+        f"notifications in {notif_channel.mention}.",
+        ephemeral=True,
+    )
+
+
 @client.tree.command(name='setchannel', description='Set the goals channel (admin)')
 @app_commands.default_permissions(manage_guild=True)
 async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -572,15 +628,7 @@ async def set_notif_channel(interaction: discord.Interaction, channel: discord.T
         (interaction.guild_id, channel.id),
     )
     db.commit()
-    embed = discord.Embed(
-        title="📢 Goal notifications land here!",
-        color=discord.Color.green(),
-        description=(
-            "Reminders for opted-in members get broadcast to this channel.\n"
-            "Opt in with `/notifications` — or jump straight in below."
-        ),
-    )
-    await channel.send(embed=embed, view=NotifPanelView())
+    await channel.send(embed=notif_embed(), view=NotifPanelView())
     await interaction.response.send_message(f"Notifications will go to {channel.mention}.", ephemeral=True)
 
 
