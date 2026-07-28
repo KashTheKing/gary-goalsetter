@@ -9,7 +9,7 @@ Discord accountability bot. You set a goal, pick friends to validate it, and the
 3. The goal is posted as an embed in the goals channel with three buttons:
    - **Remind 🔔** — anyone (but you) pings you about your goal, rate-limited per person by your goal's cooldown.
    - **Validate ✅** — only your chosen validators can click; when enough do, the goal completes and you earn a point.
-   - **Notify 📢** — posts the goal to the server's notifications channel, if you've opted in.
+     If the owner opted in (`/notifications`) and a notifications channel is set, the reminder is broadcast there too.
 
 Goals live in a local SQLite database (`gary.db`) and buttons keep working across restarts.
 
@@ -19,7 +19,7 @@ Goals live in a local SQLite database (`gary.db`) and buttons keep working acros
 - `/goals @member` — list a member's active goals
 - `/goal @member goal-id` — show one goal's embed with a jump link
 - `/cancelgoal goal-id` — cancel your own goal
-- `/notifications` — opt in/out of the Notify button for your goals
+- `/notifications` — opt in/out of reminder broadcasts to the notifications channel
 - `/points @member`, `/leaderboard` — the score
 - `/setchannel`, `/setnotifchannel` — admin: pick the goals / notifications channels
 

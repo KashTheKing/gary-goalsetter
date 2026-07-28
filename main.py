@@ -133,10 +133,19 @@ class GoalView(discord.ui.View):
             )
             return
         self._stamp(g, interaction.user.id)
-        await interaction.response.send_message(
+        text = (
             f"🔔 <@{g['user_id']}>, {interaction.user.mention} is reminding you of your goal: "
             f"**{g['description']}**"
         )
+        # If a notifications channel is set and the owner opted in, remind there too
+        notif_channel_id = get_setting(g['guild_id'], 'notif_channel')
+        opted = db.execute(
+            "SELECT 1 FROM optins WHERE guild_id=? AND user_id=?", (g['guild_id'], g['user_id'])
+        ).fetchone()
+        notif_channel = client.get_channel(notif_channel_id) if notif_channel_id and opted else None
+        if isinstance(notif_channel, discord.TextChannel) and notif_channel.id != g['channel_id']:
+            await notif_channel.send(text, embed=goal_embed(g))
+        await interaction.response.send_message(text)
 
     @discord.ui.button(label="Validate ✅", style=discord.ButtonStyle.green, custom_id="goal_validate")
     async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -181,43 +190,6 @@ class GoalView(discord.ui.View):
             await interaction.followup.send(
                 f"🎉 <@{g['user_id']}> completed their goal: **{g['description']}** (+1 point)"
             )
-
-    @discord.ui.button(label="Notify 📢", style=discord.ButtonStyle.secondary, custom_id="goal_notify")
-    async def notify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        g = self._goal(interaction)
-        if not g or g['completed']:
-            await interaction.response.send_message("This goal is no longer active.", ephemeral=True)
-            return
-        notif_channel_id = get_setting(g['guild_id'], 'notif_channel')
-        if not notif_channel_id:
-            await interaction.response.send_message(
-                "No notifications channel set. An admin can set one with /setnotifchannel.", ephemeral=True
-            )
-            return
-        opted = db.execute(
-            "SELECT 1 FROM optins WHERE guild_id=? AND user_id=?", (g['guild_id'], g['user_id'])
-        ).fetchone()
-        if not opted:
-            await interaction.response.send_message(
-                "The goal owner hasn't opted into notifications (/notifications).", ephemeral=True
-            )
-            return
-        remaining = self._on_cooldown(g, interaction.user.id)
-        if remaining:
-            await interaction.response.send_message(
-                f"Cooldown — you can notify again in {remaining // 60}m {remaining % 60}s.", ephemeral=True
-            )
-            return
-        channel = client.get_channel(notif_channel_id)
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("Notifications channel not found.", ephemeral=True)
-            return
-        self._stamp(g, interaction.user.id)
-        await channel.send(
-            f"📢 {interaction.user.mention} wants everyone to know about <@{g['user_id']}>'s goal:",
-            embed=goal_embed(g),
-        )
-        await interaction.response.send_message("Notification sent!", ephemeral=True)
 
 
 ### Goal creation: modal → validator picker → post
@@ -362,7 +334,7 @@ class SetupView(discord.ui.View):
             color=discord.Color.blurple(),
             description=(
                 "1. `/setchannel #channel` — where goals get posted (done if you're reading this here!)\n"
-                "2. `/setnotifchannel #channel` — where the **Notify 📢** button broadcasts goals\n\n"
+                "2. `/setnotifchannel #channel` — reminders also get broadcast here for opted-in users\n\n"
                 "That's it. Gary needs View Channel, Send Messages, and Embed Links in both channels."
             ),
         )
@@ -377,7 +349,7 @@ class SetupView(discord.ui.View):
                 "1. `/setgoal` — set your goal, an optional deadline, how many validations "
                 "you need, and the remind cooldown\n"
                 "2. Pick up to 5 people to validate your goal (e.g. need 3 of 5)\n"
-                "3. `/notifications` — opt in so people can broadcast your goal with **Notify 📢**\n\n"
+                "3. `/notifications` — opt in so reminders also broadcast to the notifications channel\n\n"
                 "On each goal: **Remind 🔔** pings the owner, **Validate ✅** is for the chosen "
                 "validators — enough validations completes the goal and earns a point.\n"
                 "Check progress with `/goals @member`, `/points`, and `/leaderboard`."
