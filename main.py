@@ -683,5 +683,10 @@ async def leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
+@client.tree.command(name='ping', description="Check Gary's latency")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message(f"🏓 Pong! {round(client.latency * 1000)}ms")
+
+
 ### Run
 client.run(os.environ['DISCORD_TOKEN'])
