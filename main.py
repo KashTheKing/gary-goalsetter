@@ -132,19 +132,25 @@ class GoalView(discord.ui.View):
             )
             return
         self._stamp(g, interaction.user.id)
+        jump = f"https://discord.com/channels/{g['guild_id']}/{g['channel_id']}/{g['message_id']}"
         text = (
             f"🔔 <@{g['user_id']}>, {interaction.user.mention} is reminding you of your goal: "
-            f"**{g['description']}**"
+            f"**[{g['description']}]({jump})**"
         )
-        # If a notifications channel is set and the owner opted in, remind there too
+        # Reminders go to the notifications channel when set and the owner opted in;
+        # otherwise fall back to the goals channel
         notif_channel_id = get_setting(g['guild_id'], 'notif_channel')
         opted = db.execute(
             "SELECT 1 FROM optins WHERE guild_id=? AND user_id=?", (g['guild_id'], g['user_id'])
         ).fetchone()
         notif_channel = client.get_channel(notif_channel_id) if notif_channel_id and opted else None
-        if isinstance(notif_channel, discord.TextChannel) and notif_channel.id != g['channel_id']:
-            await notif_channel.send(text, embed=goal_embed(g))
-        await interaction.response.send_message(text)
+        if isinstance(notif_channel, discord.TextChannel):
+            await notif_channel.send(text)
+            await interaction.response.send_message(
+                f"Reminder sent in {notif_channel.mention}!", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(text)
 
     @discord.ui.button(label="Copy 📋", style=discord.ButtonStyle.secondary, custom_id="goal_copy")
     async def copy(self, interaction: discord.Interaction, button: discord.ui.Button):
